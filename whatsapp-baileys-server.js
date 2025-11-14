@@ -1168,43 +1168,59 @@ app.get('/login', (req, res) => {
 });
 
 // API de login - verifica credenciales y crea sesión
-app.post('/api/auth/login', (req, res) => {
-  const { accessKey } = req.body;
+app.post('/api/auth/login', (req, res, next) => {
+  try {
+    const { accessKey } = req.body;
 
-  if (!accessKey) {
-    return res.status(400).json({ 
-      error: 'Access key requerida',
-      message: 'Debes proporcionar una access key válida' 
+    if (!accessKey) {
+      return res.status(400).json({ 
+        error: 'Access key requerida',
+        message: 'Debes proporcionar una access key válida' 
+      });
+    }
+
+    // Verificar access key
+    if (!SECURITY_CONFIG.QR_ACCESS_KEY) {
+      console.warn('⚠️ QR_ACCESS_KEY no configurada en .env');
+      return res.status(500).json({ 
+        error: 'Configuración incorrecta',
+        message: 'El servidor no tiene configurada una access key. Verifica la variable QR_ACCESS_KEY en el entorno.' 
+      });
+    }
+
+    if (accessKey !== SECURITY_CONFIG.QR_ACCESS_KEY) {
+      console.warn('🚫 Intento de login fallido desde:', req.ip);
+      return res.status(401).json({ 
+        error: 'Access key inválida',
+        message: 'La access key proporcionada no es correcta' 
+      });
+    }
+
+    // Autenticación exitosa - crear sesión
+    req.session.qrAuthenticated = true;
+    req.session.loginTime = Date.now();
+    
+    // Guardar la sesión explícitamente
+    req.session.save((err) => {
+      if (err) {
+        console.error('❌ Error al guardar sesión:', err);
+        return res.status(500).json({
+          error: 'Error de sesión',
+          message: 'No se pudo guardar la sesión'
+        });
+      }
+      
+      console.log('✅ Login exitoso desde:', req.ip);
+      
+      res.json({ 
+        success: true,
+        message: 'Autenticación exitosa' 
+      });
     });
+  } catch (error) {
+    console.error('❌ Error en /api/auth/login:', error);
+    next(error);
   }
-
-  // Verificar access key
-  if (!SECURITY_CONFIG.QR_ACCESS_KEY) {
-    console.warn('⚠️ QR_ACCESS_KEY no configurada en .env');
-    return res.status(500).json({ 
-      error: 'Configuración incorrecta',
-      message: 'El servidor no tiene configurada una access key' 
-    });
-  }
-
-  if (accessKey !== SECURITY_CONFIG.QR_ACCESS_KEY) {
-    console.warn('🚫 Intento de login fallido desde:', req.ip);
-    return res.status(401).json({ 
-      error: 'Access key inválida',
-      message: 'La access key proporcionada no es correcta' 
-    });
-  }
-
-  // Autenticación exitosa - crear sesión
-  req.session.qrAuthenticated = true;
-  req.session.loginTime = Date.now();
-  
-  console.log('✅ Login exitoso desde:', req.ip);
-  
-  res.json({ 
-    success: true,
-    message: 'Autenticación exitosa' 
-  });
 });
 
 // API de logout
@@ -1698,6 +1714,41 @@ app.post('/api/openai/reset-all', adminAuthMiddleware, async (req, res) => {
     console.error('❌ Error reiniciando conversaciones:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// ================================================
+// MIDDLEWARE DE MANEJO DE ERRORES GLOBAL
+// ================================================
+
+// Captura errores de rutas no encontradas
+app.use((req, res, next) => {
+  res.status(404).json({
+    error: 'Ruta no encontrada',
+    message: `No se encontró ${req.method} ${req.path}`,
+    path: req.path
+  });
+});
+
+// Captura todos los errores y devuelve JSON
+app.use((err, req, res, next) => {
+  console.error('❌ Error no manejado:', err);
+  
+  // Si ya se envió la respuesta, pasar al siguiente handler
+  if (res.headersSent) {
+    return next(err);
+  }
+  
+  // Determinar código de status
+  const statusCode = err.statusCode || err.status || 500;
+  
+  // Responder siempre con JSON
+  res.status(statusCode).json({
+    error: err.name || 'Error del servidor',
+    message: isProduction 
+      ? 'Ocurrió un error interno del servidor' 
+      : (err.message || 'Error desconocido'),
+    ...(isProduction ? {} : { stack: err.stack })
+  });
 });
 
 // ================================================
