@@ -78,25 +78,39 @@ app.use((req, res, next) => {
 // Configuración de CORS
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
   ? process.env.ALLOWED_ORIGINS.split(',')
-  : ['http://localhost:8080', 'http://localhost:5173'];
+  : [];
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // Permitir peticiones sin origin (mismo servidor, Postman, curl, etc)
+    // Permitir peticiones sin origin (mismo servidor, SSR, Postman, curl, etc)
     if (!origin) return callback(null, true);
+    
+    // En producción: permitir el propio dominio de Render/Railway
+    if (isProduction && origin.includes('.onrender.com')) {
+      return callback(null, true);
+    }
+    
+    if (isProduction && origin.includes('.up.railway.app')) {
+      return callback(null, true);
+    }
     
     // Permitir localhost en desarrollo (cualquier puerto)
     if (!isProduction && origin.startsWith('http://localhost:')) {
       return callback(null, true);
     }
     
-    // Verificar lista de orígenes permitidos
-    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
-      callback(null, true);
-    } else {
-      console.log(`⚠️ CORS blocked origin: ${origin}`);
-      callback(new Error('No permitido por CORS'));
+    // Verificar lista de orígenes permitidos personalizada
+    if (allowedOrigins.length > 0 && (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*'))) {
+      return callback(null, true);
     }
+    
+    // Si no hay lista personalizada en producción, permitir (el servidor sirve su propio frontend)
+    if (isProduction && allowedOrigins.length === 0) {
+      return callback(null, true);
+    }
+    
+    console.log(`⚠️ CORS blocked origin: ${origin}`);
+    callback(new Error('No permitido por CORS'));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -1170,9 +1184,14 @@ app.get('/login', (req, res) => {
 // API de login - verifica credenciales y crea sesión
 app.post('/api/auth/login', (req, res, next) => {
   try {
+    console.log('📥 Request recibido en /api/auth/login');
+    console.log('Body:', JSON.stringify(req.body));
+    console.log('Headers:', req.headers['content-type']);
+    
     const { accessKey } = req.body;
 
     if (!accessKey) {
+      console.log('❌ Access key no proporcionada');
       return res.status(400).json({ 
         error: 'Access key requerida',
         message: 'Debes proporcionar una access key válida' 
@@ -1181,7 +1200,13 @@ app.post('/api/auth/login', (req, res, next) => {
 
     // Verificar access key
     if (!SECURITY_CONFIG.QR_ACCESS_KEY) {
-      console.warn('⚠️ QR_ACCESS_KEY no configurada en .env');
+      console.error('⚠️ QR_ACCESS_KEY no configurada en .env');
+      console.log('SECURITY_CONFIG:', { 
+        hasQrKey: !!SECURITY_CONFIG.QR_ACCESS_KEY,
+        hasAdminKey: !!SECURITY_CONFIG.ADMIN_API_KEY,
+        enableQrAuth: SECURITY_CONFIG.ENABLE_QR_AUTH,
+        enableAdminAuth: SECURITY_CONFIG.ENABLE_ADMIN_AUTH
+      });
       return res.status(500).json({ 
         error: 'Configuración incorrecta',
         message: 'El servidor no tiene configurada una access key. Verifica la variable QR_ACCESS_KEY en el entorno.' 
@@ -1190,15 +1215,30 @@ app.post('/api/auth/login', (req, res, next) => {
 
     if (accessKey !== SECURITY_CONFIG.QR_ACCESS_KEY) {
       console.warn('🚫 Intento de login fallido desde:', req.ip);
+      console.log('Access key recibida (primeros 10 chars):', accessKey.substring(0, 10));
+      console.log('Access key esperada (primeros 10 chars):', SECURITY_CONFIG.QR_ACCESS_KEY.substring(0, 10));
       return res.status(401).json({ 
         error: 'Access key inválida',
         message: 'La access key proporcionada no es correcta' 
       });
     }
 
+    console.log('✅ Access key válida, creando sesión...');
+    
+    // Verificar que req.session existe
+    if (!req.session) {
+      console.error('❌ req.session no está disponible - express-session no inicializado');
+      return res.status(500).json({
+        error: 'Error de sesión',
+        message: 'El sistema de sesiones no está inicializado'
+      });
+    }
+
     // Autenticación exitosa - crear sesión
     req.session.qrAuthenticated = true;
     req.session.loginTime = Date.now();
+    
+    console.log('💾 Guardando sesión...');
     
     // Guardar la sesión explícitamente
     req.session.save((err) => {
@@ -1211,6 +1251,7 @@ app.post('/api/auth/login', (req, res, next) => {
       }
       
       console.log('✅ Login exitoso desde:', req.ip);
+      console.log('Session ID:', req.sessionID);
       
       res.json({ 
         success: true,
@@ -1219,6 +1260,7 @@ app.post('/api/auth/login', (req, res, next) => {
     });
   } catch (error) {
     console.error('❌ Error en /api/auth/login:', error);
+    console.error('Stack:', error.stack);
     next(error);
   }
 });
