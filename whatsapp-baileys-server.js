@@ -670,11 +670,23 @@ async function connectToWhatsApp() {
 
 async function handleIncomingMessage(msg) {
   try {
+    console.log('📩 Mensaje recibido:', {
+      fromMe: msg.key.fromMe,
+      hasMessage: !!msg.message,
+      messageType: msg.message ? Object.keys(msg.message)[0] : 'none'
+    });
+    
     // Ignorar mensajes propios
-    if (msg.key.fromMe) return;
+    if (msg.key.fromMe) {
+      console.log('⏩ Ignorando mensaje propio');
+      return;
+    }
     
     // Ignorar mensajes sin contenido
-    if (!msg.message) return;
+    if (!msg.message) {
+      console.log('⏩ Ignorando mensaje sin contenido');
+      return;
+    }
     
     // Extraer información del mensaje
     const messageId = msg.key.id;
@@ -710,6 +722,8 @@ async function handleIncomingMessage(msg) {
       return;
     }
     
+    console.log(`💬 Mensaje extraído de ${from}: "${messageText}"`);
+    
     // Si no hay texto, ignorar
     if (!messageText.trim()) {
       console.log(`⚠️ Mensaje sin texto válido de ${from}`);
@@ -718,6 +732,7 @@ async function handleIncomingMessage(msg) {
     
     // Evitar procesar el mismo mensaje dos veces
     if (processedMessages.has(messageId)) {
+      console.log(`⏩ Mensaje duplicado ignorado: ${messageId}`);
       return;
     }
     processedMessages.add(messageId);
@@ -728,10 +743,16 @@ async function handleIncomingMessage(msg) {
       toDelete.forEach(id => processedMessages.delete(id));
     }
     
-    botStats.messagesReceived++;    
+    botStats.messagesReceived++;
+    
+    console.log(`📊 Stats: Recibidos=${botStats.messagesReceived}, Bot=${autoBotEnabled ? 'ON' : 'OFF'}`);
+    
     if (!autoBotEnabled) {
+      console.log(`🤖 Bot desactivado - mensaje ignorado`);
       return;
     }
+    
+    console.log(`⚡ Agrupando mensaje para procesar...`);
     
     // **NUEVA LÓGICA: Agrupar mensajes consecutivos**
     await groupAndProcessMessage(from, messageText, msg);
@@ -748,6 +769,8 @@ async function handleIncomingMessage(msg) {
 
 async function groupAndProcessMessage(chatId, messageText, originalMessage) {
   try {
+    console.log(`🔄 Agrupando mensaje de ${chatId}: "${messageText.substring(0, 50)}..."`);
+    
     const now = Date.now();
     
     // NO verificar cooldown aquí - dejar que los mensajes se agrupen
@@ -867,6 +890,8 @@ async function processGroupedMessages(chatId) {
 
 async function processMessageWithBot(chatId, messageText, originalMessage) {
   try {
+    console.log(`🤖 Procesando con bot: ${chatId} - "${messageText.substring(0, 50)}..."`);
+    
     // Simular indicador de escritura (typing)
     if (BOT_CONFIG.TYPING_DELAY_MS > 0) {
       try {
@@ -888,8 +913,10 @@ async function processMessageWithBot(chatId, messageText, originalMessage) {
     
     // ===== MODO OPENAI =====
     if (BOT_CONFIG.MODE === 'openai') {
+      console.log('🤖 Usando modo OpenAI...');
       try {
         botReply = await openaiAssistant.processMessage(chatId, messageText, numero);
+        console.log(`✅ Respuesta de OpenAI recibida: "${botReply?.substring(0, 50)}..."`);
       } catch (openaiError) {
         console.error('❌ Error con OpenAI:', openaiError.message);
         botReply = null;
@@ -962,13 +989,17 @@ async function processMessageWithBot(chatId, messageText, originalMessage) {
     }
 
     if (!botReply) {
+      console.log('⚠️ No se obtuvo respuesta del bot, usando mensaje por defecto');
       botReply = 'Lo siento, no pude procesar tu mensaje.';
     }
+    
+    console.log(`📤 Enviando respuesta: "${botReply.substring(0, 50)}..."`);
     
     // Enviar respuesta usando sendMessage (maneja reconexión y reintentos)
     try {
       await sendMessage(chatId, botReply);
       botStats.autoReplies++;
+      console.log(`✅ Respuesta enviada exitosamente`);
     } catch (sendErr) {
       console.error('❌ Error enviando respuesta del bot:', sendErr.message || sendErr);
       throw sendErr;
