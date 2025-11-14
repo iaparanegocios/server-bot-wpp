@@ -157,6 +157,11 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: '10mb' }));
 app.use(rateLimitMiddleware);
 
+// Trust proxy (importante para Render/Railway)
+if (isProduction) {
+  app.set('trust proxy', 1);
+}
+
 // ================================================
 // CONFIGURACIÓN DE SESIONES
 // ================================================
@@ -171,9 +176,11 @@ app.use(session({
     secure: isProduction, // Solo HTTPS en producción
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000, // 24 horas
-    sameSite: 'lax'
+    sameSite: isProduction ? 'none' : 'lax', // 'none' para HTTPS cross-site en producción
+    domain: isProduction ? undefined : 'localhost' // Auto-detect en producción
   },
-  name: 'wa_bot_session'
+  name: 'wa_bot_session',
+  proxy: isProduction // Necesario para cookies secure detrás de proxy
 }));
 
 // ================================================
@@ -215,17 +222,26 @@ const adminAuthMiddleware = (req, res, next) => {
 
 // Middleware para verificar autenticación de QR viewer (basado en sesión)
 const qrSessionAuthMiddleware = (req, res, next) => {
+  console.log('🔐 Verificando autenticación de sesión...');
+  console.log('Session exists:', !!req.session);
+  console.log('Session authenticated:', req.session?.qrAuthenticated);
+  console.log('Session ID:', req.sessionID);
+  console.log('Cookies:', req.headers.cookie);
+  
   // Si la autenticación está deshabilitada, permitir acceso
   if (!SECURITY_CONFIG.ENABLE_QR_AUTH) {
+    console.log('✅ Auth deshabilitada - permitiendo acceso');
     return next();
   }
 
   // Verificar si el usuario tiene sesión activa
   if (req.session && req.session.qrAuthenticated) {
+    console.log('✅ Sesión válida - permitiendo acceso');
     return next();
   }
 
   // No autenticado - redirigir a login
+  console.log('❌ No autenticado - redirigiendo a /login');
   return res.redirect('/login');
 };
 
