@@ -32,6 +32,7 @@ npm start
 
 - **[INICIO-RAPIDO.md](INICIO-RAPIDO.md)** - Guía de inicio rápido
 - **[OPENAI-SETUP.md](OPENAI-SETUP.md)** - Configuración completa de OpenAI
+- **[QR-MANAGEMENT.md](QR-MANAGEMENT.md)** - 🆕 Sistema de gestión de QR mejorado
 - **[RENDER-SETUP-RAPIDO.md](RENDER-SETUP-RAPIDO.md)** - Deploy en Render.com
 - **[IMPLEMENTACION-COMPLETA.md](IMPLEMENTACION-COMPLETA.md)** - Detalles técnicos
 

@@ -321,12 +321,14 @@ let autoBotEnabled = process.env.AUTO_BOT_ENABLED !== 'false';
 let botReadyTime = null;
 let shouldAutoReconnect = true; // Control de reconexión automática
 
-// Control de QR codes para evitar spam infinito
+// Control de QR codes 
 let qrAttempts = 0;
-const MAX_QR_ATTEMPTS = 10; // Aumentado para permitir más intentos hasta escanear
+const MAX_QR_GENERATION_TIME = 10 * 60 * 1000; // 10 minutos en total para escanear
+let firstQrTime = null; // Timestamp del primer QR generado
 let hasValidSession = false; // Nueva variable para rastrear sesión válida
 let isConnecting = false; // Flag para evitar reconexiones concurrentes
 let qrRefreshInterval = null; // Interval para auto-renovar QR
+let lastQrGenerationTime = null; // Último QR generado
 
 // Control de mensajes procesados (evitar duplicados)
 const processedMessages = new Set();
@@ -452,9 +454,22 @@ async function connectToWhatsApp() {
       
       // QR Code recibido
       if (qr) {
-        // Verificar límite de QR ANTES de procesar
-        if (qrAttempts >= MAX_QR_ATTEMPTS) {
-          log.warn(`Límite de QRs alcanzado (${qrAttempts}/${MAX_QR_ATTEMPTS})`);
+        const now = Date.now();
+        
+        // Si es el primer QR, iniciar el timer
+        if (!firstQrTime) {
+          firstQrTime = now;
+          console.log('⏱️ Iniciando ventana de 10 minutos para escanear QR');
+        }
+        
+        // Verificar si han pasado más de 10 minutos desde el primer QR
+        const elapsedTime = now - firstQrTime;
+        if (elapsedTime > MAX_QR_GENERATION_TIME) {
+          console.log('⏰ Han pasado 10 minutos sin escanear el QR');
+          console.log('🛑 Deteniendo generación de QRs');
+          console.log('💡 Para reiniciar: POST /api/whatsapp/clear-session y luego /api/whatsapp/initialize');
+          shouldAutoReconnect = false;
+          connectionStatus = 'disconnected';
           return;
         }
         
@@ -465,13 +480,17 @@ async function connectToWhatsApp() {
             fs.rmSync(SESSION_DIR, { recursive: true, force: true });
             hasValidSession = false;
             qrAttempts = 0;
+            firstQrTime = null;
             setTimeout(() => connectToWhatsApp(), 2000);
             return;
           }
         }
         
         qrAttempts++;
+        lastQrGenerationTime = now;
         connectionStatus = 'qr_received';
+        
+        const remainingTime = Math.ceil((MAX_QR_GENERATION_TIME - elapsedTime) / 1000);
         
         // Limpiar interval anterior si existe
         if (qrRefreshInterval) {
@@ -482,7 +501,8 @@ async function connectToWhatsApp() {
         // Convertir QR a base64 para el frontend
         try {
           qrCodeData = await QRCode.toDataURL(qr);
-          log.info(`📱 QR generado (${qrAttempts}/${MAX_QR_ATTEMPTS}) - Escanea desde WhatsApp`);
+          console.log(`📱 QR #${qrAttempts} generado - Tiempo restante: ${Math.floor(remainingTime / 60)}m ${remainingTime % 60}s`);
+          log.info(`📱 QR generado (${qrAttempts}) - Escanea desde WhatsApp`);
         } catch (err) {
           log.error('Error convirtiendo QR:', err);
         }
@@ -507,12 +527,16 @@ async function connectToWhatsApp() {
         
         // Manejar QR expirado específicamente - Permitir auto-renovación
         if (statusCode === 408 && errorMessage.includes('QR refs attempts ended')) {
-          console.log(`🔄 QR expirado (${qrAttempts}/${MAX_QR_ATTEMPTS} intentos) - Renovando automáticamente`);
+          const now = Date.now();
+          const elapsedSinceFirstQr = firstQrTime ? (now - firstQrTime) : 0;
           
-          // Solo detener si hemos excedido realmente el límite de intentos
-          if (qrAttempts >= MAX_QR_ATTEMPTS) {
-            console.log('🛑 Límite real de QRs alcanzado - Deteniendo');
-            console.log('💡 Para reactivar: POST /api/whatsapp/reset-session y luego /api/whatsapp/initialize');
+          console.log(`🔄 QR expirado (intento #${qrAttempts})`);
+          
+          // Verificar si aún estamos dentro de la ventana de tiempo
+          if (elapsedSinceFirstQr > MAX_QR_GENERATION_TIME) {
+            console.log('⏰ Tiempo límite alcanzado (10 minutos sin escanear)');
+            console.log('🛑 Deteniendo renovación automática de QR');
+            console.log('💡 Para reintentar: POST /api/whatsapp/clear-session y luego /api/whatsapp/initialize');
             shouldAutoReconnect = false;
             shouldAttemptReconnect = false;
             
@@ -523,7 +547,8 @@ async function connectToWhatsApp() {
             }
           } else {
             // Continuar renovando QR automáticamente
-            console.log('🔄 Renovando QR automáticamente...');
+            const remainingTime = Math.ceil((MAX_QR_GENERATION_TIME - elapsedSinceFirstQr) / 1000);
+            console.log(`🔄 Renovando QR automáticamente... (${Math.floor(remainingTime / 60)}m restantes)`);
             reconnectDelay = 2000; // Reconectar rápido para nuevo QR
           }
         }
@@ -536,6 +561,7 @@ async function connectToWhatsApp() {
           }
           hasValidSession = false;
           qrAttempts = 0; // Reset QR attempts para nueva sesión
+          firstQrTime = null; // Reset timer
         } 
         else if (statusCode === DisconnectReason.connectionClosed) {
           console.log('🔌 Conexión cerrada por WhatsApp - reconectando con sesión existente');
@@ -1204,6 +1230,10 @@ async function clearSession() {
     connectionStatus = 'disconnected';
     isClientReady = false;
     qrCodeData = null;
+    hasValidSession = false;
+    qrAttempts = 0;
+    firstQrTime = null; // Reset timer de QR
+    lastQrGenerationTime = null;
     processedMessages.clear();
     
     // Recrear directorio
@@ -1368,6 +1398,30 @@ app.get('/api/whatsapp/status', (req, res, next) => {
   try {
     const hasSession = fs.existsSync(path.join(SESSION_DIR, 'creds.json'));
     
+    // Calcular tiempo restante si estamos en proceso de QR
+    let timeInfo = null;
+    if (firstQrTime && connectionStatus === 'qr_received') {
+      const elapsed = Date.now() - firstQrTime;
+      const remaining = MAX_QR_GENERATION_TIME - elapsed;
+      
+      if (remaining > 0) {
+        const minutes = Math.floor(remaining / 60000);
+        const seconds = Math.floor((remaining % 60000) / 1000);
+        timeInfo = {
+          remainingMs: remaining,
+          remainingMinutes: minutes,
+          remainingSeconds: seconds,
+          displayTime: `${minutes}m ${seconds}s`,
+          elapsedMs: elapsed
+        };
+      } else {
+        timeInfo = {
+          expired: true,
+          message: 'Tiempo agotado. Use /api/whatsapp/restart-qr-timer para reiniciar'
+        };
+      }
+    }
+    
     res.json({
       status: connectionStatus,
       isReady: isClientReady,
@@ -1376,14 +1430,16 @@ app.get('/api/whatsapp/status', (req, res, next) => {
       hasValidSession: hasValidSession,
       autoBotEnabled: autoBotEnabled,
       qrAttempts: qrAttempts,
-      maxQrAttempts: MAX_QR_ATTEMPTS,
+      qrTimeRemaining: timeInfo,
       shouldAutoReconnect: shouldAutoReconnect,
       stats: {
         ...botStats,
         uptime: Math.floor((Date.now() - botStats.startTime.getTime()) / 1000)
       },
-      message: connectionStatus === 'qr_received' && qrAttempts >= MAX_QR_ATTEMPTS - 1 
-        ? 'QR generado - Escanéalo desde WhatsApp > Dispositivos vinculados'
+      message: connectionStatus === 'qr_received' && timeInfo?.expired
+        ? '⏰ Tiempo agotado. Usa /api/whatsapp/restart-qr-timer para obtener 10 minutos nuevos'
+        : connectionStatus === 'qr_received' 
+        ? `📱 QR generado - Escanéalo desde WhatsApp (${timeInfo?.displayTime || 'calculando...'} restantes)`
         : hasValidSession && !isClientReady
         ? 'Reconectando con sesión existente...'
         : 'WhatsApp Auto-Bot Service (Baileys)'
@@ -1424,6 +1480,8 @@ app.post('/api/whatsapp/reset-session', adminAuthMiddleware, async (req, res) =>
     qrCodeData = null;
     hasValidSession = false;
     qrAttempts = 0;
+    firstQrTime = null; // Reset timer de QR
+    lastQrGenerationTime = null;
     shouldAutoReconnect = true;
     isConnecting = false;
     
@@ -1592,9 +1650,55 @@ app.post('/api/whatsapp/send', async (req, res) => {
 app.post('/api/whatsapp/clear-session', adminAuthMiddleware, async (req, res) => {
   try {
     await clearSession();
-    res.json({ message: 'Sesión eliminada correctamente' });
+    res.json({ 
+      success: true,
+      message: 'Sesión eliminada correctamente. Usa /api/whatsapp/initialize para generar nuevo QR' 
+    });
   } catch (error) {
     console.error('❌ Error limpiando sesión:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Reiniciar timer de QR (sin borrar sesión) - PROTEGIDO
+app.post('/api/whatsapp/restart-qr-timer', adminAuthMiddleware, async (req, res) => {
+  try {
+    console.log('🔄 Reiniciando timer de QR...');
+    
+    // Reset solo los contadores de tiempo
+    firstQrTime = null;
+    qrAttempts = 0;
+    shouldAutoReconnect = true;
+    
+    // Si ya hay una conexión activa, desconectar primero
+    if (sock && connectionStatus !== 'disconnected') {
+      console.log('🔌 Cerrando conexión actual para reiniciar...');
+      try {
+        sock.end();
+        sock = null;
+      } catch (err) {
+        console.log('⚠️ Error cerrando socket:', err.message);
+      }
+    }
+    
+    connectionStatus = 'disconnected';
+    isClientReady = false;
+    qrCodeData = null;
+    
+    console.log('✅ Timer de QR reiniciado. Generando nuevo QR...');
+    
+    // Dar tiempo para que se limpie todo
+    setTimeout(() => {
+      connectToWhatsApp();
+    }, 1000);
+    
+    res.json({ 
+      success: true,
+      message: 'Timer de QR reiniciado. Tendrás 10 minutos nuevos para escanear.',
+      info: 'Espera 2-3 segundos y verifica /api/whatsapp/status para ver el nuevo QR'
+    });
+  } catch (error) {
+    console.error('❌ Error reiniciando timer de QR:', error);
     res.status(500).json({ error: error.message });
   }
 });
